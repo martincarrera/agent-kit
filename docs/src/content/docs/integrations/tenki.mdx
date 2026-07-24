@@ -1,0 +1,281 @@
+---
+title: Using AgentKit with Tenki
+description: "Build Coding Agents with Tenki's secure and fast cloud sandboxes for executing AI-generated code"
+---
+
+import { Steps, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+[Tenki](https://tenki.cloud) provides secure, fast cloud sandboxes for running AI-generated code. Each sandbox is an isolated environment with a full toolchain (Bash, Python, Node.js, Bun, Git) that boots in seconds, making it a great fit for running code, spinning up applications, data analysis, automated testing and more.
+
+Tenki is a solid foundation for building autonomous Coding Agents that can scaffold projects, execute scripts, and deliver production-ready solutions.
+
+
+## Setup
+
+<Steps>
+
+1. **Install AgentKit and Tenki**
+
+    Within an existing project, Install AgentKit and the Tenki sandbox SDK:
+
+    <Tabs>
+      <TabItem label="npm">
+      ```shell
+      npm install @inngest/agent-kit inngest @tenkicloud/sandbox
+      ```
+      </TabItem>
+      <TabItem label="pnpm">
+      ```shell
+      pnpm install @inngest/agent-kit inngest @tenkicloud/sandbox
+      ```
+      </TabItem>
+      <TabItem label="yarn">
+      ```shell
+      yarn add @inngest/agent-kit inngest @tenkicloud/sandbox
+      ```
+      </TabItem>
+    </Tabs>
+
+   <details>
+   <summary>Don't have an existing project?</summary>
+
+   To create a new project, create a new directory then initialize using your package manager:
+
+   <Tabs>
+     <TabItem label="npm">
+     ```shell
+     mkdir my-agent-kit-project && npm init
+     ```
+     </TabItem>
+     <TabItem label="pnpm">
+     ```shell
+     mkdir my-agent-kit-project && pnpm init
+     ```
+     </TabItem>
+     <TabItem label="yarn">
+     ```shell
+     mkdir my-agent-kit-project && yarn init
+     ```
+     </TabItem>
+   </Tabs>
+
+   </details>
+
+2. **Setup the Coding Agent**
+
+    Create a Coding Agent with a system prompt that defines its behavior and select a model with appropriate parameters. In this example, we use Anthropic's Claude model:
+
+    ```typescript
+    import {
+      createAgent,
+      anthropic,
+    } from "@inngest/agent-kit";
+
+    const codingAgent = createAgent({
+      name: "Coding Agent",
+      description:
+        "An autonomous coding agent for building software in a Tenki sandbox",
+      system: `You are a coding agent designed to help the user achieve software development tasks. You have access to a Tenki sandbox environment.
+
+      Capabilities:
+      - You can execute code snippets or scripts.
+      - You can run shell commands to install dependencies, manipulate files, and set up environments.
+      - You can create, upload, and organize files and directories to build basic applications and project structures.
+
+      Workspace Instructions:
+      - You do not need to define, set up, or specify the workspace directory. Assume you are already inside a default workspace directory that is ready for app creation.
+      - All file and folder operations (create, upload, organize) should use paths relative to this default workspace.
+      - Do not attempt to create or configure the workspace itself; focus only on the requested development tasks.
+
+      Guidelines:
+      - Always analyze the user's request and plan your steps before taking action.
+      - Prefer automation and scripting over manual or interactive steps.
+      - When installing packages or running commands that may prompt for input, use flags (e.g., '-y') to avoid blocking.
+      - If you are developing an app that is served with a development server (e.g. Next.js, React):
+          1. Return the port information in the form: DEV_SERVER_PORT=$PORT (replace $PORT with the actual port number).
+          2. Start the development server.
+          3. After starting the dev server, always check its health in the next iteration. Only mark the task as complete if the health check passes: there must be no errors thrown, and the log content must not indicate a problem (such as error messages, stack traces, or failed startup). If any of these are present, diagnose and fix the issue before completing the task.
+      - When you have completed the requested task, set the "TASK_COMPLETED" string in your output to signal that the app is finished.
+      `,
+      model: anthropic({
+        model: "claude-haiku-4-5-20251001",
+        defaultParameters: {
+          max_tokens: 8192,
+        },
+      }),
+    });
+    ```
+
+3. **Create the Tenki Tools**
+
+    To fulfill the objectives specified in its system prompt, the Coding Agent needs access to sandbox environments; this is where Tenki steps in.
+
+    The Tenki sandbox session is exposed to the Coding Agent via tools. Our goal is to define a set of tools that enable the Coding Agent to achieve virtually any coding task.
+
+    A single long-lived Tenki session is created with `client.createAndWait(...)` and shared across all tools via the network state. Note that Tenki's `exec` is argv-style (it does not spawn a shell), so shell commands are wrapped as `bash -c "<command>"` (not `-l`: a login shell resets the working directory to `$HOME`, defeating the `cwd` option).
+
+    In this example, we'll show implementations of `shellTool` and `readFileTool`. Note that the code also uses `getSession` and `logDebug` utility functions for session management and logging. You can find complete implementations of all coding agent tools and utility functions in the [Tenki Coding Agent example](https://github.com/inngest/agent-kit/tree/main/examples/tenki-coding-agent#readme).
+
+    ```typescript {4, 6-8, 42 - 105}
+    import {
+      createAgent,
+      anthropic,
+      createTool,
+    } from "@inngest/agent-kit";
+    import { z } from "zod";
+    import { SandboxError, stdoutText, stderrText } from "@tenkicloud/sandbox";
+    import { getSession, resolveWorkspacePath, WORKSPACE_DIR, logDebug } from "./utils.js";
+
+    const codingAgent = createAgent({
+      name: "Coding Agent",
+      description:
+        "An autonomous coding agent for building software in a Tenki sandbox",
+      system: `You are a coding agent designed to help the user achieve software development tasks. You have access to a Tenki sandbox environment.
+
+      Capabilities:
+      - You can execute code snippets or scripts.
+      - You can run shell commands to install dependencies, manipulate files, and set up environments.
+      - You can create, upload, and organize files and directories to build basic applications and project structures.
+
+      Workspace Instructions:
+      - You do not need to define, set up, or specify the workspace directory. Assume you are already inside a default workspace directory that is ready for app creation.
+      - All file and folder operations (create, upload, organize) should use paths relative to this default workspace.
+      - Do not attempt to create or configure the workspace itself; focus only on the requested development tasks.
+
+      Guidelines:
+      - Always analyze the user's request and plan your steps before taking action.
+      - Prefer automation and scripting over manual or interactive steps.
+      - When installing packages or running commands that may prompt for input, use flags (e.g., '-y') to avoid blocking.
+      - If you are developing an app that is served with a development server (e.g. Next.js, React):
+          1. Return the port information in the form: DEV_SERVER_PORT=$PORT (replace $PORT with the actual port number).
+          2. Start the development server.
+          3. After starting the dev server, always check its health in the next iteration. Only mark the task as complete if the health check passes: there must be no errors thrown, and the log content must not indicate a problem (such as error messages, stack traces, or failed startup). If any of these are present, diagnose and fix the issue before completing the task.
+      - When you have completed the requested task, set the "TASK_COMPLETED" string in your output to signal that the app is finished.
+      `,
+      model: anthropic({
+        model: "claude-haiku-4-5-20251001",
+        defaultParameters: {
+          max_tokens: 8192,
+        },
+      }),
+      tools: [
+        createTool({
+          name: "shellTool",
+          description: `Executes a shell command inside the Tenki sandbox environment. Use this tool for tasks like installing packages, running scripts, or manipulating files via shell commands.
+      Parameters:
+          - shellCommand: Shell command to execute (e.g., "npm install", "ls -la").
+          - env: Environment variables to set for the command as key-value pairs (e.g. { "NODE_ENV": "production" }).`,
+          parameters: z.object({
+            shellCommand: z.string(),
+            env: z.record(z.string(), z.string()).nullable(),
+          }),
+          handler: async ({ shellCommand, env }, { network }) => {
+            try {
+              const session = await getSession(network);
+              console.log(`[TOOL: shellTool]\nCommand: ${shellCommand}`);
+              // Tenki's exec is argv-style (execve, no shell), so shell
+              // commands are wrapped in `bash -c`.
+              const response = await session.exec("bash", {
+                args: ["-c", shellCommand],
+                env: env ?? {},
+                cwd: WORKSPACE_DIR,
+              });
+              const responseMessage = `Command result:\nExit code: ${
+                response.exitCode
+              }\nStdout: ${stdoutText(response)}\nStderr: ${stderrText(
+                response
+              )}`;
+              logDebug(responseMessage);
+              return responseMessage;
+            } catch (error) {
+              console.error("Error executing shell command:", error);
+              if (error instanceof SandboxError)
+                return `Shell command execution Tenki error: ${error.message}`;
+              else return "Error executing shell command";
+            }
+          },
+        }),
+        createTool({
+          name: "readFileTool",
+          description: `Reads the contents of a file from the Tenki sandbox. Use this tool to retrieve source code, configuration files, or other assets for analysis or processing.`,
+          parameters: z.object({
+            filePath: z.string(),
+          }),
+          handler: async ({ filePath }, { network }) => {
+            try {
+              const session = await getSession(network);
+              console.log(`[TOOL: readFileTool]\nFile path: ${filePath}`);
+              const fileBytes = await session.readFile(
+                resolveWorkspacePath(filePath)
+              );
+              const fileContent = new TextDecoder().decode(fileBytes);
+              const readFileMessage = `Successfully read file: ${filePath}\nContent:\n${fileContent}`;
+              logDebug(readFileMessage);
+              return fileContent;
+            } catch (error) {
+              console.error("Error reading file:", error);
+              if (error instanceof SandboxError)
+                return `File reading Tenki error: ${error.message}`;
+              else return "Error reading file";
+            }
+          },
+        }),
+      ],
+    });
+    ```
+
+4. **Create agent network**
+
+    Create a network with a code-based router that determines when the agent has completed its task and checks if a development server was started to set the data needed for exposing the preview URL.
+
+    ```typescript
+    import {
+      createNetwork,
+    } from "@inngest/agent-kit";
+    import { extractTextMessageContent, logDebug } from "./utils.js";
+
+    const network = createNetwork({
+      name: "coding-agent-network",
+      agents: [codingAgent], // Using codingAgent from previous step
+      maxIter: 30,
+      defaultRouter: ({ network, callCount }) => {
+        const previousIterationMessageContent = extractTextMessageContent(
+          network.state.results.at(-1)
+        );
+        if (previousIterationMessageContent)
+          logDebug(`Iteration message:\n${previousIterationMessageContent}\n`);
+        console.log(`\n ===== Iteration #${callCount + 1} =====\n`);
+        if (callCount > 0) {
+          if (previousIterationMessageContent.includes("TASK_COMPLETED")) {
+            const isDevServerAppMessage = network.state.results.map((result) => extractTextMessageContent(result)).find((messageContent) =>
+              messageContent.includes("DEV_SERVER_PORT")
+            );
+            if (isDevServerAppMessage) {
+              const portMatch = isDevServerAppMessage.match(
+                /DEV_SERVER_PORT=([0-9]+)/
+              );
+              const port =
+                portMatch && portMatch[1]
+                  ? parseInt(portMatch[1], 10)
+                  : undefined;
+              if (port) network.state.data.devServerPort = port;
+            }
+            return;
+          }
+        }
+        return codingAgent;
+      },
+    });
+    ```
+
+</Steps>
+
+:::tip
+For more details on Tenki sandboxes (sessions, file APIs, port exposure, snapshots and more), check out the [Tenki documentation](https://docs.tenki.cloud)
+:::
+
+## Examples
+
+<CardGrid>
+  <LinkCard title="Coding Agent powered by Tenki sandboxes" href="https://github.com/inngest/agent-kit/tree/main/examples/tenki-coding-agent#readme" description="This AgentKit example uses Tenki to build a fully autonomous coding agent that performs software development tasks" />
+</CardGrid>
