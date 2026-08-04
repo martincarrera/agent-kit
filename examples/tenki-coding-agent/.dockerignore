@@ -1,0 +1,7 @@
+# Never bake local credentials into the image.
+.env*
+!.env.example
+
+# Installed inside the image; copying the host's would overwrite it
+# with platform-specific binaries.
+node_modules

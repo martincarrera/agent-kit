@@ -37,7 +37,14 @@ export async function createSession(
   } catch (error) {
     throw new Error(`Failed to create Tenki session: ${error}`);
   }
-  await session.exec("mkdir", { args: ["-p", WORKSPACE_DIR] });
+  try {
+    await session.exec("mkdir", { args: ["-p", WORKSPACE_DIR] });
+  } catch (error) {
+    // The VM already exists at this point; tear it down before propagating
+    // so a setup failure doesn't leave it running until its max duration.
+    await session.closeIfOpen();
+    throw new Error(`Failed to prepare the session workspace: ${error}`);
+  }
   if (network) network.state.data.session = session;
   return session;
 }
@@ -53,9 +60,9 @@ export function resolveWorkspacePath(path: string) {
   return path.startsWith("/") ? path : `${WORKSPACE_DIR}/${path}`;
 }
 
+// Enabled with ENABLE_DEBUG_LOGS=true (see .env.example).
 export const logDebug = (message: string) => {
-  const enableDebugLogs = false;
-  if (enableDebugLogs) console.log(message);
+  if (process.env.ENABLE_DEBUG_LOGS === "true") console.log(message);
 };
 
 // Offset from the dev-server port to the relay's listen port.
@@ -144,8 +151,18 @@ export async function ensureExternallyReachable(
   session: Session,
   port: number
 ): Promise<number> {
-  const binding = await probePortBinding(session, port);
-  if (binding !== "loopback") return port;
+  // The dev server may still be binding when the agent reports the port;
+  // poll briefly before concluding that nothing is listening.
+  let binding = await probePortBinding(session, port);
+  for (let attempts = 0; binding === "none" && attempts < 10; attempts++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    binding = await probePortBinding(session, port);
+  }
+  if (binding === "none")
+    throw new Error(
+      `Nothing is listening on port ${port}; refusing to expose it (the preview URL would return 502).`
+    );
+  if (binding === "wildcard") return port;
 
   // Find a free port for the relay: skip anything already listening.
   let relayPort = port + RELAY_PORT_OFFSET;

@@ -9,7 +9,7 @@ import {
   anthropic,
 } from "@inngest/agent-kit";
 import { SandboxError, stdoutText, stderrText } from "@tenkicloud/sandbox";
-import type { ExecResult } from "@tenkicloud/sandbox";
+import type { ExecResult, Session } from "@tenkicloud/sandbox";
 import readline from "node:readline/promises";
 import {
   WORKSPACE_DIR,
@@ -33,10 +33,6 @@ function formatExecResult(result: ExecResult): string {
 }
 
 async function main() {
-  // One long-lived Tenki session is used for the whole agent run and
-  // terminated in the `finally` block at the end of this function.
-  const session = await createSession();
-
   const codeRunTool = createTool({
     name: "codeRunTool",
     description: `Executes code in the Tenki sandbox. Use this tool to run code snippets, scripts, or application entry points.
@@ -417,36 +413,43 @@ Guidelines:
     ],
   });
 
-  const network = createNetwork({
-    name: "coding-agent-network",
-    agents: [codingAgent],
-    maxIter: 30,
-    defaultState: createState<Record<string, any>>({ session }),
-    defaultRouter: ({ network, callCount }) => {
-      const previousIterationMessageContent = extractTextMessageContent(
-        network.state.results.at(-1)
-      );
-      if (previousIterationMessageContent)
-        logDebug(`Iteration message:\n${previousIterationMessageContent}\n`);
-      console.log(`\n ===== Iteration #${callCount + 1} =====\n`);
-      if (callCount > 0) {
-        if (previousIterationMessageContent.includes("TASK_COMPLETED")) {
-          // The port may be reported in any iteration; keep the last one.
-          for (const result of network.state.results) {
-            const portMatch = extractTextMessageContent(result).match(
-              /DEV_SERVER_PORT=([0-9]+)/
-            );
-            if (portMatch && portMatch[1])
-              network.state.data.devServerPort = parseInt(portMatch[1], 10);
-          }
-          return;
-        }
-      }
-      return codingAgent;
-    },
-  });
-
+  // One long-lived Tenki session is used for the whole agent run. It is
+  // created inside the `try` so that any failure after the VM exists still
+  // reaches the `finally` teardown instead of leaving the sandbox running
+  // until its max duration limit.
+  let session: Session | undefined;
   try {
+    session = await createSession();
+
+    const network = createNetwork({
+      name: "coding-agent-network",
+      agents: [codingAgent],
+      maxIter: 30,
+      defaultState: createState<Record<string, any>>({ session }),
+      defaultRouter: ({ network, callCount }) => {
+        const previousIterationMessageContent = extractTextMessageContent(
+          network.state.results.at(-1)
+        );
+        if (previousIterationMessageContent)
+          logDebug(`Iteration message:\n${previousIterationMessageContent}\n`);
+        console.log(`\n ===== Iteration #${callCount + 1} =====\n`);
+        if (callCount > 0) {
+          if (previousIterationMessageContent.includes("TASK_COMPLETED")) {
+            // The port may be reported in any iteration; keep the last one.
+            for (const result of network.state.results) {
+              const portMatch = extractTextMessageContent(result).match(
+                /DEV_SERVER_PORT=([0-9]+)/
+              );
+              if (portMatch && portMatch[1])
+                network.state.data.devServerPort = parseInt(portMatch[1], 10);
+            }
+            return;
+          }
+        }
+        return codingAgent;
+      },
+    });
+
     const result = await network.run(
       `Create a minimal React app called "Notes" that lets users add, view, and delete notes. Each note should have a title and content. Use Create React App or Vite for setup. Include a simple UI with a form to add notes and a list to display them.`
     );
@@ -477,9 +480,12 @@ Guidelines:
       rl.close();
     }
   } catch (error) {
-    console.error("An error occurred during the final phase:", error);
+    console.error("An error occurred during the agent run:", error);
+    // Fail loudly: without this, `npm run start` exits 0 on a failed run
+    // and CI/Docker treats it as successful.
+    process.exitCode = 1;
   } finally {
-    await session.closeIfOpen();
+    if (session) await session.closeIfOpen();
   }
 }
 

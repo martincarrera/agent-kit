@@ -12,7 +12,7 @@ This project demonstrates a fully autonomous coding agent capable of performing 
 - **File and directory management:** Creates, uploads, reads, and deletes files and directories as needed.
 - **Script and test execution:** Runs arbitrary scripts and test suites.
 - **Automated reasoning:** Plans and executes multi-step development workflows based on user prompts.
-- **Debug logging:** Detailed agent flow tracking enabled via `enableDebugLogs=true`.
+- **Debug logging:** Detailed agent flow tracking enabled via the `ENABLE_DEBUG_LOGS=true` environment variable.
 
 ## Requirements
 
@@ -24,6 +24,7 @@ To run the coding agent, you need to set the following environment variables:
 
 - `TENKI_API_KEY`: Required for access to Tenki sandboxes. Get it from the [Tenki dashboard](https://tenki.cloud). The SDK also accepts `TENKI_AUTH_TOKEN`, which takes precedence when both are set.
 - `ANTHROPIC_API_KEY`: Because Anthropic is the default model provider, you must set `ANTHROPIC_API_KEY` in your environment. By default the agent uses the `claude-haiku-4-5-20251001` model with a preset token limit.
+- `ENABLE_DEBUG_LOGS` (optional): Set to `true` to enable detailed debug logging.
 
 > [!Note]
 > You can change the token setting and the model (see all available Anthropic models at [AgentKit Supported Models](https://agentkit.inngest.com/concepts/models#list-of-supported-models)). To use a different model provider, follow the instructions at [AgentKit Model Setup](https://agentkit.inngest.com/concepts/models#create-a-model-instance).
@@ -78,7 +79,7 @@ Before proceeding with either Local or Docker setup, complete the following step
 
 - **Prompt Setting:** The main prompt for the agent is configured in the `network.run(...)` call inside [`src/index.ts`](src/index.ts). You can edit this prompt to change the agent's task or try different app ideas and workflows.
 
-- **Debug Logs:** Detailed agent flow tracking is enabled by setting `enableDebugLogs=true`. This will log all agent iterations and tool actions for transparency and troubleshooting.
+- **Debug Logs:** Detailed agent flow tracking is enabled by setting the `ENABLE_DEBUG_LOGS=true` environment variable (in your `.env` file or shell). This will log all agent iterations and tool actions for transparency and troubleshooting.
 
 ## Example Usage
 
