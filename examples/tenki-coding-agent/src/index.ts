@@ -418,6 +418,20 @@ Guidelines:
   // reaches the `finally` teardown instead of leaving the sandbox running
   // until its max duration limit.
   let session: Session | undefined;
+
+  // `finally` does not run when Node is killed by a signal (Ctrl+C at the
+  // readline prompt, `docker stop`, a closed terminal), which would leave
+  // the sandbox running until its max duration; tear it down explicitly.
+  // `once` so a second signal during cleanup falls back to a forced exit.
+  const terminateOnSignal = async (signal: NodeJS.Signals) => {
+    console.log(`\nReceived ${signal}; terminating the sandbox session...`);
+    if (session) await session.closeIfOpen();
+    process.exit(1);
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.once(signal, () => void terminateOnSignal(signal));
+  }
+
   try {
     session = await createSession();
 
@@ -474,6 +488,8 @@ Guidelines:
         input: process.stdin,
         output: process.stdout,
       });
+      // readline swallows Ctrl+C on a TTY instead of signaling the process.
+      rl.on("SIGINT", () => void terminateOnSignal("SIGINT"));
       await rl.question(
         "Press Enter to terminate the sandbox and exit...\n"
       );

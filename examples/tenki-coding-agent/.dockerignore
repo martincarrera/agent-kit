@@ -5,3 +5,6 @@
 # Installed inside the image; copying the host's would overwrite it
 # with platform-specific binaries.
 node_modules
+
+# Compiled inside the image; a stale host build could leave orphan files.
+dist

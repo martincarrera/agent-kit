@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@inngest/agent-kit": "^0.13.2",
-    "@tenkicloud/sandbox": "^0.5.0",
+    "@tenkicloud/sandbox": "^0.5.4",
     "dotenv": "^17.2.3",
     "zod": "^4.1.13"
   }

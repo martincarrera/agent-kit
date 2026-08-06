@@ -19,6 +19,28 @@ export function extractTextMessageContent(
   return "";
 }
 
+// `createAndWait` can return before the sandbox data plane is stable: the
+// first exec may hit transient transport errors (HTTP/2 CANCEL, TLS) or
+// hang, so each attempt is bounded by a timeout and retried with backoff.
+const FIRST_EXEC_ATTEMPTS = 3;
+const FIRST_EXEC_TIMEOUT_MS = 15_000;
+const FIRST_EXEC_RETRY_DELAY_MS = 2_000;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Timed out after ${ms} ms`)),
+      ms
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function createSession(
   network?: NetworkRun<Record<string, any>>
 ) {
@@ -37,13 +59,32 @@ export async function createSession(
   } catch (error) {
     throw new Error(`Failed to create Tenki session: ${error}`);
   }
-  try {
-    await session.exec("mkdir", { args: ["-p", WORKSPACE_DIR] });
-  } catch (error) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= FIRST_EXEC_ATTEMPTS; attempt++) {
+    try {
+      await withTimeout(
+        session.exec("mkdir", { args: ["-p", WORKSPACE_DIR] }),
+        FIRST_EXEC_TIMEOUT_MS
+      );
+      lastError = undefined;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < FIRST_EXEC_ATTEMPTS) {
+        console.log(
+          `Session not reachable yet (attempt ${attempt}/${FIRST_EXEC_ATTEMPTS}): ${error}. Retrying...`
+        );
+        await new Promise((resolve) =>
+          setTimeout(resolve, FIRST_EXEC_RETRY_DELAY_MS * attempt)
+        );
+      }
+    }
+  }
+  if (lastError !== undefined) {
     // The VM already exists at this point; tear it down before propagating
     // so a setup failure doesn't leave it running until its max duration.
     await session.closeIfOpen();
-    throw new Error(`Failed to prepare the session workspace: ${error}`);
+    throw new Error(`Failed to prepare the session workspace: ${lastError}`);
   }
   if (network) network.state.data.session = session;
   return session;

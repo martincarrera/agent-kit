@@ -279,16 +279,24 @@ Tenki is a solid foundation for building autonomous Coding Agents that can scaff
     });
     ```
 
-6. **Run the network and terminate the session**
+6. **Run the network, expose the preview URL, and terminate the session**
 
     The long-lived session owns a live sandbox VM, so create it and run the network inside a `try/finally` that always terminates it — otherwise a failed run leaves the sandbox running until its max duration limit is reached. This brings together the network from the previous step, now with a `defaultState` that hands the session to every tool.
 
-    ```typescript {9-11, 17-18, 51-57}
+    After the run, the router has stored the dev server port in the network state. Before tearing the session down, `ensureExternallyReachable` (from the example's [utility functions](https://github.com/inngest/agent-kit/tree/main/examples/tenki-coding-agent#readme)) verifies something is actually listening on that port — bridging servers bound to loopback only, which would otherwise return 502 through the preview proxy — then `exposePort` returns the public preview URL, and the process waits for Enter so the sandbox stays alive while you open it.
+
+    ```typescript {15-17, 23-24, 54-79, 83-86}
     import "dotenv/config";
 
     import { createNetwork, createState } from "@inngest/agent-kit";
     import type { Session } from "@tenkicloud/sandbox";
-    import { createSession, extractTextMessageContent, logDebug } from "./utils.js";
+    import readline from "node:readline/promises";
+    import {
+      createSession,
+      ensureExternallyReachable,
+      extractTextMessageContent,
+      logDebug,
+    } from "./utils.js";
 
     async function main() {
       let session: Session | undefined;
@@ -331,9 +339,32 @@ Tenki is a solid foundation for building autonomous Coding Agents that can scaff
           },
         });
 
-        await network.run(
+        const result = await network.run(
           `Create a minimal React app called "Notes" that lets users add, view, and delete notes.`
         );
+
+        // The router stored the port the agent reported; validate and expose
+        // it so the preview URL is available before the session is torn down.
+        const devServerPort = result.state.data.devServerPort;
+        if (devServerPort) {
+          // Dev servers often bind to loopback only (e.g. Vite without
+          // --host), which would 502 through the preview proxy; this bridges
+          // them to 0.0.0.0 — or throws if nothing is listening on the port.
+          const portToExpose = await ensureExternallyReachable(
+            session,
+            devServerPort
+          );
+          const exposedPort = await session.exposePort(portToExpose);
+          console.log(`App is ready! Preview: ${exposedPort.previewUrl}`);
+
+          // Keep the sandbox alive so the preview URL can be opened.
+          const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          });
+          await rl.question("Press Enter to terminate the sandbox and exit...\n");
+          rl.close();
+        }
       } catch (error) {
         console.error("An error occurred during the agent run:", error);
         process.exitCode = 1;
